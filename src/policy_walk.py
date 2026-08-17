@@ -44,7 +44,18 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
+from dataclasses import dataclass, field
+
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+
+
+@dataclass
+class RslRlPpoAlgorithmCfgWithSymmetry(RslRlPpoAlgorithmCfg):
+    """PPO cfg extended with rsl_rl's native symmetry_cfg hook.
+    dict form: {"use_data_augmentation": bool, "use_mirror_loss": bool,
+                 "mirror_loss_coeff": float, "data_augmentation_func": str_or_callable}
+    """
+    symmetry_cfg: dict | None = None
 
 TASK_ID = "Mjlab-Velocity-Flat-Unitree-G1-Custom"
 
@@ -500,10 +511,16 @@ def g1_ppo_runner_cfg():
             distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
         ),
         critic=RslRlModelCfg(hidden_dims=(512, 256, 128), activation="elu", obs_normalization=True),
-        algorithm=RslRlPpoAlgorithmCfg(
+        algorithm=RslRlPpoAlgorithmCfgWithSymmetry(
             value_loss_coef=1.0, use_clipped_value_loss=True, clip_param=0.2, entropy_coef=0.01,
             num_learning_epochs=5, num_mini_batches=4, learning_rate=1e-3, schedule="adaptive",
             gamma=0.99, lam=0.95, desired_kl=0.01, max_grad_norm=1.0,
+            symmetry_cfg={
+                "use_data_augmentation": True,
+                "use_mirror_loss": False,
+                "mirror_loss_coeff": 0.0,
+                "data_augmentation_func": "src.symmetry:mirror_g1_walk",
+            },
         ),
         experiment_name="g1_walk", save_interval=50, num_steps_per_env=24,
         max_iterations=10_000, logger="tensorboard", upload_model=False,
