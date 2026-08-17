@@ -133,6 +133,25 @@ def joint_deviation_l1(env, asset_cfg):
     return torch.sum(torch.abs(current - default), dim=1)
 
 
+class gated_pose(mdp.variable_posture):
+    """Wrapper around variable_posture that zeros the reward for any env with cmd_norm > command_threshold. Removes the pose-vs-track_linear_velocity competition during walking so low-speed gaits (cmd ~0.1-0.3) can emerge without being pulled back to the home posture at every step; standing still gets the full tight pose regularization.
+    Args: same as variable_posture plus command_threshold — cmd magnitude ceiling above which the pose reward is set to zero.
+    Returns: (num_envs,) reward tensor in [0, 1].
+    """
+
+    def __call__(self, env, std_standing, std_walking, std_running,
+                 asset_cfg, command_name,
+                 walking_threshold=0.5, running_threshold=1.5,
+                 command_threshold=0.06):
+        base = super().__call__(env, std_standing, std_walking, std_running,
+                                asset_cfg, command_name,
+                                walking_threshold, running_threshold)
+        command = env.command_manager.get_command(command_name)
+        total_speed = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+        active = (total_speed <= command_threshold).float()
+        return base * active
+
+
 def swing_height_error(env, sensor_name, height_sensor_name, target_height, sigma,
                        command_name="twist", command_threshold=0.05):
     """Quadratic penalty on foot height error while in swing (fuses foot_clearance + foot_swing_height).
@@ -326,12 +345,14 @@ def build_g1_mdp():
         "track_angular_velocity": RewardTermCfg(func=mdp.track_angular_velocity, weight=6.0, params={"command_name": "twist", "std": math.sqrt(0.10)}),
         "wz_sign_penalty": RewardTermCfg(func=wz_sign_penalty, weight=2.0, params={"command_name": "twist"}),
         "upright":                RewardTermCfg(func=mdp.upright,                weight=2.0, params={"std": math.sqrt(0.05), "asset_cfg": torso}),
+        # Gated to cmd_norm <= 0.06 so pose regularization only fires in standing envs. In walking regimes it was competing head-to-head with track_linear_velocity at low speeds (both around 2.3-2.5), pushing the policy to prefer standing over slow gaits — removing the reward there frees track_lin_vel + gait terms to shape the walking behavior alone.
         "pose": RewardTermCfg(
-            func=mdp.variable_posture,
+            func=gated_pose,
             weight=0.8,
             params={
                 "asset_cfg": g1_asset,
                 "command_name": "twist",
+                "command_threshold": 0.06,
                 "std_standing": {".*": 0.05},
                 "std_walking": {
                     r".*hip_pitch.*":    0.45,
