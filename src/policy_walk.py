@@ -122,15 +122,23 @@ def double_stance_reward(env, sensor_name, command_name=None, command_threshold=
     return reward
 
 
-def joint_deviation_l1(env, asset_cfg):
-    """L1 penalty on |joint_pos - default| summed over the selected joints. Linear pull-back gradient that doesn't saturate like variable_posture's exp-Gaussian, so it can hold hip_roll/hip_yaw/ankle_roll at zero even when double_stance rewards a wide-base stance.
-    Args: env — RL env; asset_cfg — SceneEntityCfg selecting the joints to constrain to their default pose.
+def joint_deviation_l1(env, asset_cfg, command_name=None, command_threshold=0.05):
+    """L1 penalty on |joint_pos - default| summed over the selected joints, optionally gated to standing commands only. Linear pull-back gradient that doesn't saturate like variable_posture's exp-Gaussian, so it can hold hip_roll/hip_yaw/ankle_roll at zero without competing with the walking gait once cmd_vel exceeds command_threshold.
+    Args: env — RL env; asset_cfg — SceneEntityCfg selecting the joints to constrain; command_name — twist command key (optional gate); command_threshold — cmd magnitude ceiling below which the penalty is active.
     Returns: (num_envs,) non-negative penalty tensor.
     """
     asset = env.scene[asset_cfg.name]
     current = asset.data.joint_pos[:, asset_cfg.joint_ids]
     default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-    return torch.sum(torch.abs(current - default), dim=1)
+    penalty = torch.sum(torch.abs(current - default), dim=1)
+    if command_name is not None:
+        command = env.command_manager.get_command(command_name)
+        if command is not None:
+            linear_norm = torch.norm(command[:, :2], dim=1)
+            angular_norm = torch.abs(command[:, 2])
+            active = ((linear_norm + angular_norm) <= command_threshold).float()
+            penalty = penalty * active
+    return penalty
 
 
 def swing_height_error(env, sensor_name, height_sensor_name, target_height, sigma,
@@ -413,14 +421,18 @@ def build_g1_mdp():
                 "command_threshold": 0.05,
             },
         ),
-        # L1 pull on hip_roll/hip_yaw/ankle_roll toward the KNEES_BENT_KEYFRAME zero — variable_posture's exp-Gaussian saturates and averages across 29 joints, so per-joint deviations that widen the stance felt no gradient. L1 gives constant linear pull regardless of magnitude and doesn't get diluted by other well-behaved joints.
+        # L1 pull on hip_roll/hip_yaw/ankle_roll toward the KNEES_BENT_KEYFRAME zero — variable_posture's exp-Gaussian saturates and averages across 29 joints, so per-joint deviations that widen the stance felt no gradient. L1 gives constant linear pull regardless of magnitude and doesn't get diluted by other well-behaved joints. Gated on cmd <= 0.05 so it enforces a narrow standing pose without blocking the hip_roll excursion low-speed walking needs for weight shift; variable_posture's std_walking (0.15 rad) is the regularizer once the gait activates.
         "hip_ankle_alignment": RewardTermCfg(
             func=joint_deviation_l1,
             weight=-2.0,
-            params={"asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[".*hip_roll.*", ".*hip_yaw.*", ".*ankle_roll.*"],
-            )},
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[".*hip_roll.*", ".*hip_yaw.*", ".*ankle_roll.*"],
+                ),
+                "command_name": "twist",
+                "command_threshold": 0.05,
+            },
         ),
         "self_collisions": RewardTermCfg(
             func=mdp.self_collision_cost,
