@@ -113,16 +113,16 @@ G1_DEX3_ACTUATOR = BuiltinPositionActuatorCfg(
 def _dex3_robot_cfg() -> EntityCfg:
     """Build the EntityCfg for the G1 + Dex3 body.
     Args: none.
-    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block; collision uses FULL_COLLISION_WITHOUT_SELF so the 14 finger capsule geoms never contact the robot's own torso/arms (unstable at 8192 envs with FULL_COLLISION, produced NaN velocities in the first step).
+    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block.
     """
-    from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ARTICULATION, FULL_COLLISION_WITHOUT_SELF
+    from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ARTICULATION, FULL_COLLISION
     articulation = EntityArticulationInfoCfg(
         actuators=tuple(G1_ARTICULATION.actuators) + (G1_DEX3_ACTUATOR,),
         soft_joint_pos_limit_factor=G1_ARTICULATION.soft_joint_pos_limit_factor,
     )
     return EntityCfg(
         init_state=KNEES_BENT_KEYFRAME,
-        collisions=(FULL_COLLISION_WITHOUT_SELF,),
+        collisions=(FULL_COLLISION,),
         spec_fn=_dex3_spec,
         articulation=articulation,
     )
@@ -203,16 +203,11 @@ def g1_flat_env_cfg_dex3(play: bool = False):
 def g1_ppo_runner_cfg_dex3():
     """Build the PPO runner cfg for the Dex3 variant.
     Args: none.
-    Returns: runner cfg with the base 29-DOF walk hyperparams and mirror aug wired through the 43-DOF permutation and sign-flip table in src/symmetry.py.
+    Returns: runner cfg with the base 29-DOF walk hyperparams and mirror aug DISABLED until the 43-DOF perm/sign-flip table in src/symmetry.py is verified (currently suspected of causing NaN gradients around iter ~6 at 8192 envs).
     """
     rl = _pw.g1_ppo_runner_cfg()
     rl.experiment_name = "g1_walk_dex3"
-    rl.algorithm.symmetry_cfg = {
-        "use_data_augmentation": True,
-        "use_mirror_loss": False,
-        "mirror_loss_coeff": 0.0,
-        "data_augmentation_func": "src.symmetry:mirror_g1_walk_dex3",
-    }
+    rl.algorithm.symmetry_cfg = None
     return rl
 
 
