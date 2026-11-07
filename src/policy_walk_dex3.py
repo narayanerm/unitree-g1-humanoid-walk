@@ -14,6 +14,7 @@ Then in a notebook:
 """
 from __future__ import annotations
 
+import shutil
 import mujoco
 from pathlib import Path
 
@@ -29,21 +30,51 @@ import src.policy_walk as _pw
 
 TASK_ID = "Mjlab-Velocity-Flat-Unitree-G1-Dex3"
 
-DEX3_XML = Path(mujoco.__file__).parent.parent / "mjlab" / "asset_zoo" / "robots" / "unitree_g1" / "xmls" / "g1_with_hand.xml"
-if not DEX3_XML.exists():
-    import mjlab as _mjlab
-    DEX3_XML = Path(_mjlab.__file__).parent / "asset_zoo" / "robots" / "unitree_g1" / "xmls" / "g1_with_hand.xml"
+import mjlab as _mjlab
+MJLAB_XMLS = Path(_mjlab.__file__).parent / "asset_zoo" / "robots" / "unitree_g1" / "xmls"
+DEX3_XML = MJLAB_XMLS / "g1_with_hand.xml"
+
+
+def install_dex3_assets(verbose: bool = True) -> Path:
+    """Copy the Dex3 XML + STL meshes from the repo into mjlab's asset dir.
+
+    Idempotent — overwrites existing files so a stale copy gets refreshed.
+    Mirrors scripts/install_dex3_assets.sh so the notebook can call it without a shell.
+    Args: verbose: when True, prints a short install summary.
+    Returns: path to the installed g1_with_hand.xml.
+    """
+    for _p in (Path.cwd().resolve(), *Path.cwd().resolve().parents):
+        if (_p / "LICENSE").exists():
+            repo_root = _p
+            break
+    else:
+        raise FileNotFoundError("Could not locate repo root (LICENSE missing).")
+
+    src_dir = repo_root / "assets" / "dex3"
+    if not src_dir.is_dir():
+        raise FileNotFoundError(f"{src_dir} not found. Dex3 assets missing from repo.")
+    if not MJLAB_XMLS.is_dir():
+        raise FileNotFoundError(f"{MJLAB_XMLS} not found. Is mjlab installed?")
+
+    shutil.copy2(src_dir / "g1_with_hand.xml", MJLAB_XMLS / "g1_with_hand.xml")
+    meshes_dst = MJLAB_XMLS / "assets"
+    meshes_dst.mkdir(exist_ok=True)
+    n = 0
+    for stl in (src_dir / "meshes").glob("*.STL"):
+        shutil.copy2(stl, meshes_dst / stl.name)
+        n += 1
+    if verbose:
+        print(f"[dex3] installed g1_with_hand.xml + {n} meshes into {MJLAB_XMLS}")
+    return DEX3_XML
 
 
 def _dex3_spec() -> mujoco.MjSpec:
     """Load the G1 + Dex3 MJCF from the installed asset path.
     Args: none.
-    Returns: MjSpec parsed from g1_with_hand.xml; FileNotFoundError if the install script has not been run.
+    Returns: MjSpec parsed from g1_with_hand.xml; auto-installs the assets if missing.
     """
     if not DEX3_XML.exists():
-        raise FileNotFoundError(
-            f"{DEX3_XML} not found. Run `bash scripts/install_dex3_assets.sh` first."
-        )
+        install_dex3_assets(verbose=False)
     return mujoco.MjSpec.from_file(str(DEX3_XML))
 
 
