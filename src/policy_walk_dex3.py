@@ -113,16 +113,16 @@ G1_DEX3_ACTUATOR = BuiltinPositionActuatorCfg(
 def _dex3_robot_cfg() -> EntityCfg:
     """Build the EntityCfg for the G1 + Dex3 body.
     Args: none.
-    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block.
+    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block; collision uses FULL_COLLISION_WITHOUT_SELF so the 14 finger capsule geoms never contact the robot's own torso/arms (unstable at 8192 envs with FULL_COLLISION, produced NaN velocities in the first step).
     """
-    from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ARTICULATION, FULL_COLLISION
+    from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ARTICULATION, FULL_COLLISION_WITHOUT_SELF
     articulation = EntityArticulationInfoCfg(
         actuators=tuple(G1_ARTICULATION.actuators) + (G1_DEX3_ACTUATOR,),
         soft_joint_pos_limit_factor=G1_ARTICULATION.soft_joint_pos_limit_factor,
     )
     return EntityCfg(
         init_state=KNEES_BENT_KEYFRAME,
-        collisions=(FULL_COLLISION,),
+        collisions=(FULL_COLLISION_WITHOUT_SELF,),
         spec_fn=_dex3_spec,
         articulation=articulation,
     )
