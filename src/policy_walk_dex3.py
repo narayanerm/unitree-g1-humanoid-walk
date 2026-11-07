@@ -25,6 +25,8 @@ from mjlab.asset_zoo.robots.unitree_g1.g1_constants import (
 )
 from mjlab.entity import EntityCfg
 
+InitialStateCfg = EntityCfg.InitialStateCfg
+
 import src.policy_walk as _pw
 
 
@@ -96,10 +98,34 @@ DEX3_HAND_JOINTS = (
 )
 
 # Dex3 finger joints are small and low-inertia: modest stiffness with a high damping ratio keeps them from oscillating under contact. Tune via DR or a sweep once the walk policy itself is stable.
-DEX3_HAND_STIFFNESS = 5.0
-DEX3_HAND_DAMPING   = 0.5
+# High stiffness + damping intentionally lock the fingers near the hand-closed home pose
+# for walk_dex3: there is no useful finger reward signal here, so the 14 extra action dims
+# would otherwise pollute action_rate_l2 and drag the policy into the "stand and fall"
+# local optimum (see outputs/logs/g1_walk_dex3/2026-11-07_21-50-13: reward plateaued at
+# +2.4 vs base walk +78). carry_dex3 drops these back to 5.0 / 0.5 since it needs mobile
+# fingers to grasp the box.
+DEX3_HAND_STIFFNESS = 50.0
+DEX3_HAND_DAMPING   = 5.0
 DEX3_HAND_EFFORT    = 2.5
 DEX3_HAND_ARMATURE  = 1.0e-4
+
+# Hand-closed resting pose (fingers flexed toward palm). Z-axis finger joints flip sign
+# left-right because their ranges are negatives of each other (per assets/dex3/g1_with_hand.xml).
+DEX3_HOME_JOINT_POS = {
+    r".*_hand_thumb_0_joint":  0.0,
+    r"left_hand_thumb_1_joint":   0.3,
+    r"right_hand_thumb_1_joint": -0.3,
+    r"left_hand_thumb_2_joint":   0.8,
+    r"right_hand_thumb_2_joint": -0.8,
+    r"left_hand_index_0_joint":  -1.0,
+    r"right_hand_index_0_joint":  1.0,
+    r"left_hand_index_1_joint":  -1.2,
+    r"right_hand_index_1_joint":  1.2,
+    r"left_hand_middle_0_joint": -1.0,
+    r"right_hand_middle_0_joint": 1.0,
+    r"left_hand_middle_1_joint": -1.2,
+    r"right_hand_middle_1_joint": 1.2,
+}
 
 G1_DEX3_ACTUATOR = BuiltinPositionActuatorCfg(
     target_names_expr=(".*_hand_(thumb|index|middle)_[0-2]_joint",),
@@ -110,10 +136,27 @@ G1_DEX3_ACTUATOR = BuiltinPositionActuatorCfg(
 )
 
 
+def _dex3_init_state() -> InitialStateCfg:
+    """Build the init_state for walk_dex3 by extending KNEES_BENT_KEYFRAME with the hand-closed home pose.
+    Args: none.
+    Returns: InitialStateCfg inheriting pos/rot/lin_vel/ang_vel/joint_vel from KNEES_BENT_KEYFRAME, with joint_pos merged from the base regex dict and DEX3_HOME_JOINT_POS.
+    """
+    merged_joint_pos = dict(KNEES_BENT_KEYFRAME.joint_pos)
+    merged_joint_pos.update(DEX3_HOME_JOINT_POS)
+    return InitialStateCfg(
+        pos=KNEES_BENT_KEYFRAME.pos,
+        rot=KNEES_BENT_KEYFRAME.rot,
+        lin_vel=KNEES_BENT_KEYFRAME.lin_vel,
+        ang_vel=KNEES_BENT_KEYFRAME.ang_vel,
+        joint_pos=merged_joint_pos,
+        joint_vel=KNEES_BENT_KEYFRAME.joint_vel,
+    )
+
+
 def _dex3_robot_cfg() -> EntityCfg:
     """Build the EntityCfg for the G1 + Dex3 body.
     Args: none.
-    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block.
+    Returns: EntityCfg combining the base G1 articulation with the Dex3 hand actuator block; init_state locks fingers in the hand-closed home pose and the high stiffness of G1_DEX3_ACTUATOR keeps them there.
     """
     from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ARTICULATION, FULL_COLLISION
     articulation = EntityArticulationInfoCfg(
@@ -121,7 +164,7 @@ def _dex3_robot_cfg() -> EntityCfg:
         soft_joint_pos_limit_factor=G1_ARTICULATION.soft_joint_pos_limit_factor,
     )
     return EntityCfg(
-        init_state=KNEES_BENT_KEYFRAME,
+        init_state=_dex3_init_state(),
         collisions=(FULL_COLLISION,),
         spec_fn=_dex3_spec,
         articulation=articulation,
@@ -178,6 +221,27 @@ def _add_hand_still_reward(cfg) -> None:
     )
 
 
+def action_rate_l2_base_only(env) -> "torch.Tensor":
+    """L2 action-rate penalty scoped to the first 29 action dims (G1 base joints).
+    Args: env: RL env; the raw policy output is indexed before the per-term scale.
+    Returns: (num_envs,) tensor = sum_{i<29} (a_i_t - a_i_{t-1})^2; matches policy_walk.action_rate_l2 on 29-DOF but excludes the 14 Dex3 hand dims whose high-stiffness-locked actuators are agnostic to policy output.
+    """
+    import torch
+    a_now = env.action_manager.action[:, :29]
+    a_prev = env.action_manager.prev_action[:, :29]
+    return torch.sum(torch.square(a_now - a_prev), dim=1)
+
+
+def _scope_action_rate_to_base(cfg) -> None:
+    """Replace the global action_rate_l2 term with the base-29-only variant.
+    Args: cfg: env cfg whose action_rate_l2 reward term is overwritten in place.
+    Returns: none; prevents the 14 locked hand action dims from inflating the rate penalty and biasing the policy toward all-zero actions.
+    """
+    term = cfg.rewards.get("action_rate_l2")
+    if term is not None:
+        term.func = action_rate_l2_base_only
+
+
 def g1_flat_env_cfg_dex3(play: bool = False):
     """Build the Dex3 variant of the walk env via a one-shot monkey-patch of policy_walk globals.
     Args: play: forwarded to policy_walk.g1_flat_env_cfg to toggle the play-mode overrides.
@@ -197,17 +261,23 @@ def g1_flat_env_cfg_dex3(play: bool = False):
         _pw.G1_ACTION_SCALE = orig_scale
     _extend_pose_stds_for_hands(cfg)
     _add_hand_still_reward(cfg)
+    _scope_action_rate_to_base(cfg)
     return cfg
 
 
 def g1_ppo_runner_cfg_dex3():
     """Build the PPO runner cfg for the Dex3 variant.
     Args: none.
-    Returns: runner cfg with the base 29-DOF walk hyperparams and mirror aug DISABLED until the 43-DOF perm/sign-flip table in src/symmetry.py is verified (currently suspected of causing NaN gradients around iter ~6 at 8192 envs).
+    Returns: runner cfg with the base 29-DOF walk hyperparams and mirror aug wired through the base-only variant of src.symmetry.mirror_g1_walk_dex3 (14 hand DOF are passed through unchanged so the PPO ratio stays exact on the hand slice and the base L/R symmetry still accelerates leg/arm learning).
     """
     rl = _pw.g1_ppo_runner_cfg()
     rl.experiment_name = "g1_walk_dex3"
-    rl.algorithm.symmetry_cfg = None
+    rl.algorithm.symmetry_cfg = {
+        "use_data_augmentation": True,
+        "use_mirror_loss": False,
+        "mirror_loss_coeff": 0.0,
+        "data_augmentation_func": "src.symmetry:mirror_g1_walk_dex3",
+    }
     return rl
 
 
