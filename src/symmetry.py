@@ -1,8 +1,8 @@
-###############################################################################
-# Project    : Humanoid Loco-Manipulation with the Unitree G1                 #
-# Developer  : Narayane Ribeiro Medeiros                                      #
-# Repository : https://github.com/narayanerm/Humanoid-Loco-Manipulation       #
-###############################################################################
+##########################################################################################
+# Project    : unitree-g1-humanoid-walk                                                  #
+# Developer  : Narayane Ribeiro Medeiros                                                 #
+# Repository : https://github.com/narayanerm/unitree-g1-humanoid-walk                    #
+##########################################################################################
 """Left-right symmetry (sagittal-plane mirror) for the G1 walk task.
 
 Input:  obs tensor (or TensorDict with actor/critic keys) and actions tensor.
@@ -26,10 +26,8 @@ from __future__ import annotations
 
 import torch
 
-# ==================== joint mapping ====================
-
-# Canonical mjlab and Unitree SDK order for the G1 29-DOF. Kept as a tuple so
-# it can be diff'd against G1_JOINTS at import time (see _assert_joint_order).
+# Canonical mjlab and Unitree SDK order for the G1 29-DOF, kept as a tuple so
+# it can be diffed against G1_JOINTS at import time (see _assert_joint_order).
 G1_29DOF_JOINT_ORDER = (
     "left_hip_pitch_joint",  "left_hip_roll_joint",  "left_hip_yaw_joint",
     "left_knee_joint",       "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -42,14 +40,15 @@ G1_29DOF_JOINT_ORDER = (
     "right_elbow_joint",          "right_wrist_roll_joint",    "right_wrist_pitch_joint", "right_wrist_yaw_joint",
 )
 
-# Permutation: OUT[i] takes value from IN[G1_MIRROR_PERM[i]].
-# Legs (L 0-5 <-> R 6-11), waist 12-14 stays, arms (L 15-21 <-> R 22-28).
-_perm = list(range(29))
-_perm[0:6] = list(range(6, 12))
-_perm[6:12] = list(range(0, 6))
-_perm[15:22] = list(range(22, 29))
-_perm[22:29] = list(range(15, 22))
-G1_MIRROR_PERM = tuple(_perm)
+# Permutation OUT[i] takes value from IN[G1_MIRROR_PERM[i]].
+# Legs (L 0-5 vs R 6-11), waist 12-14 stays, arms (L 15-21 vs R 22-28).
+perm = list(range(29))
+perm[0:6] = list(range(6, 12))
+perm[6:12] = list(range(0, 6))
+perm[15:22] = list(range(22, 29))
+perm[22:29] = list(range(15, 22))
+G1_MIRROR_PERM = tuple(perm)
+del perm
 
 # Joints whose axis is roll (x) or yaw (z) invert sign under sagittal mirror.
 # Pitch axes (y-axis) do NOT invert.
@@ -57,7 +56,10 @@ G1_MIRROR_SIGN_FLIP_IDX = (1, 2, 5, 7, 8, 11, 12, 13, 16, 17, 19, 21, 23, 24, 26
 
 
 def _assert_joint_order():
-    """Verify runtime G1_JOINTS matches the hard-coded G1_29DOF_JOINT_ORDER."""
+    """Verify runtime G1_JOINTS matches the hard-coded G1_29DOF_JOINT_ORDER.
+    Args: none.
+    Returns: none.
+    """
     from src.policy_walk import G1_JOINTS
     if tuple(G1_JOINTS) != G1_29DOF_JOINT_ORDER:
         mismatches = [(i, a, b) for i, (a, b) in enumerate(zip(G1_JOINTS, G1_29DOF_JOINT_ORDER)) if a != b]
@@ -71,8 +73,8 @@ _assert_joint_order()
 
 
 def _switch_g1_joints_left_right(x: torch.Tensor) -> torch.Tensor:
-    """Permute L<->R on the last dim of a (..., 29) tensor and flip roll/yaw signs.
-    Args: x — tensor whose last dim is exactly 29 (joint_pos, joint_vel or actions).
+    """Permute left/right on the last dim of a (..., 29) tensor and flip roll/yaw signs.
+    Args: x: tensor whose last dim is exactly 29 (joint_pos, joint_vel or actions).
     Returns: mirrored tensor, same shape.
     """
     perm = torch.as_tensor(G1_MIRROR_PERM, device=x.device, dtype=torch.long)
@@ -82,8 +84,7 @@ def _switch_g1_joints_left_right(x: torch.Tensor) -> torch.Tensor:
     return out * signs
 
 
-# ==================== walk obs layout (99 dims) ====================
-# actor and critic share the same terms in policy_walk.build_g1_mdp.
+# Walk obs layout (99 dims); actor and critic share the same terms in policy_walk.build_g1_mdp.
 
 WALK_OBS_DIM = 99
 
@@ -108,8 +109,8 @@ WALK_OBS_SIGNS = {
 
 
 def mirror_walk_obs(obs: torch.Tensor) -> torch.Tensor:
-    """Mirror a concatenated walk obs tensor. Handles history stacking as (..., T*99).
-    Args: obs — (..., k*WALK_OBS_DIM) tensor for k >= 1 stacked timesteps.
+    """Mirror a concatenated walk obs tensor, handling history stacking as (..., T*99).
+    Args: obs: (..., k*WALK_OBS_DIM) tensor for k >= 1 stacked timesteps.
     Returns: mirrored tensor, same shape.
     """
     assert obs.shape[-1] % WALK_OBS_DIM == 0, (
@@ -129,18 +130,16 @@ def mirror_walk_obs(obs: torch.Tensor) -> torch.Tensor:
 
 def mirror_walk_actions(actions: torch.Tensor) -> torch.Tensor:
     """Mirror walk actions (29-D joint targets).
-    Args: actions — (..., 29) tensor.
+    Args: actions: (..., 29) tensor.
     Returns: mirrored actions, same shape.
     """
     return _switch_g1_joints_left_right(actions)
 
 
-# ==================== rsl_rl entrypoint ====================
-
 @torch.no_grad()
 def mirror_g1_walk(env=None, obs=None, actions=None):
-    """rsl_rl symmetry_cfg entrypoint. Returns doubled batch [original; mirrored].
-    Args: env — mjlab env (unused, kept for the rsl_rl API contract). obs — TensorDict with per-group keys, or plain tensor. actions — (N, 29) tensor, or None.
+    """rsl_rl symmetry_cfg entrypoint returning a doubled batch [original; mirrored].
+    Args: env: mjlab env (unused, kept for the rsl_rl API contract); obs: TensorDict with per-group keys, or plain tensor; actions: (N, 29) tensor, or None.
     Returns: (obs_out, actions_out); each is None if the corresponding input is None, else doubled along the batch dim.
     """
     obs_out = None
@@ -161,4 +160,114 @@ def mirror_g1_walk(env=None, obs=None, actions=None):
         actions_mirror = mirror_walk_actions(actions)
         actions_out = torch.cat([actions, actions_mirror], dim=0)
 
+    return obs_out, actions_out
+
+
+# Dex3 variant (43 DOF: 29 base + 14 hand). Hand axes per assets/dex3/g1_with_hand.xml: thumb_0 keeps sign (Y axis, symmetric range); thumb_1/2, index_0/1, middle_0/1 flip sign (Z axis, L/R mirror-negated ranges). Permutation swaps left-hand block (29..35) with right-hand block (36..42).
+
+DEX3_HAND_JOINT_ORDER = (
+    "left_hand_thumb_0_joint",  "left_hand_thumb_1_joint",  "left_hand_thumb_2_joint",
+    "left_hand_index_0_joint",  "left_hand_index_1_joint",
+    "left_hand_middle_0_joint", "left_hand_middle_1_joint",
+    "right_hand_thumb_0_joint", "right_hand_thumb_1_joint", "right_hand_thumb_2_joint",
+    "right_hand_index_0_joint", "right_hand_index_1_joint",
+    "right_hand_middle_0_joint","right_hand_middle_1_joint",
+)
+G1_43DOF_JOINT_ORDER = G1_29DOF_JOINT_ORDER + DEX3_HAND_JOINT_ORDER
+
+_perm43 = list(G1_MIRROR_PERM) + list(range(36, 43)) + list(range(29, 36))
+G1_DEX3_MIRROR_PERM = tuple(_perm43)
+del _perm43
+
+# Flip Z-axis hand joints (thumb_1/2, index_0/1, middle_0/1 per side); thumb_0 keeps sign.
+_DEX3_HAND_FLIP = (30, 31, 32, 33, 34, 35, 37, 38, 39, 40, 41, 42)
+G1_DEX3_MIRROR_SIGN_FLIP_IDX = G1_MIRROR_SIGN_FLIP_IDX + _DEX3_HAND_FLIP
+del _DEX3_HAND_FLIP
+
+
+def _assert_dex3_joint_order():
+    """Verify the Dex3 runtime joint tuple matches G1_43DOF_JOINT_ORDER.
+    Args: none; call explicitly from policy_walk_dex3 to avoid import-time coupling with the 29-DOF path.
+    Returns: none.
+    """
+    from src.policy_walk_dex3 import _dex3_joint_tuple
+    actual = _dex3_joint_tuple()
+    if tuple(actual) != G1_43DOF_JOINT_ORDER:
+        mismatches = [(i, a, b) for i, (a, b) in enumerate(zip(actual, G1_43DOF_JOINT_ORDER)) if a != b]
+        raise AssertionError(f"Dex3 joint order differs from G1_43DOF_JOINT_ORDER. First mismatches: {mismatches[:5]}")
+
+
+def _switch_g1_joints_left_right_dex3(x: torch.Tensor) -> torch.Tensor:
+    """Permute left/right on the last dim of a (..., 43) tensor and apply the Dex3 sign-flip table.
+    Args: x: tensor whose last dim is exactly 43 (29 base joints plus 14 Dex3 hand joints).
+    Returns: mirrored tensor, same shape.
+    """
+    perm = torch.as_tensor(G1_DEX3_MIRROR_PERM, device=x.device, dtype=torch.long)
+    out = torch.index_select(x, dim=-1, index=perm)
+    signs = torch.ones(43, device=x.device, dtype=x.dtype)
+    signs[list(G1_DEX3_MIRROR_SIGN_FLIP_IDX)] = -1.0
+    return out * signs
+
+
+WALK_DEX3_OBS_DIM = 141
+WALK_DEX3_OBS_LAYOUT = {
+    "base_lin_vel":      (0,   3),
+    "base_ang_vel":      (3,   6),
+    "projected_gravity": (6,   9),
+    "joint_pos":         (9,  52),
+    "joint_vel":         (52, 95),
+    "actions":           (95, 138),
+    "command":           (138, 141),
+}
+assert WALK_DEX3_OBS_LAYOUT["command"][1] == WALK_DEX3_OBS_DIM
+
+
+def mirror_walk_dex3_obs(obs: torch.Tensor) -> torch.Tensor:
+    """Mirror a concatenated walk-Dex3 obs tensor, handling history stacking as (..., T*141).
+    Args: obs: (..., k*WALK_DEX3_OBS_DIM) tensor for k >= 1 stacked timesteps.
+    Returns: mirrored tensor, same shape.
+    """
+    assert obs.shape[-1] % WALK_DEX3_OBS_DIM == 0, (
+        f"Last dim {obs.shape[-1]} not multiple of {WALK_DEX3_OBS_DIM}"
+    )
+    n_stack = obs.shape[-1] // WALK_DEX3_OBS_DIM
+    lead = obs.shape[:-1]
+    x = obs.clone().view(*lead, n_stack, WALK_DEX3_OBS_DIM)
+    for term, (a, b) in WALK_DEX3_OBS_LAYOUT.items():
+        if term in WALK_OBS_SIGNS:
+            signs = torch.tensor(WALK_OBS_SIGNS[term], device=obs.device, dtype=obs.dtype)
+            x[..., a:b] = x[..., a:b] * signs
+        else:
+            x[..., a:b] = _switch_g1_joints_left_right_dex3(x[..., a:b])
+    return x.view(*lead, obs.shape[-1])
+
+
+def mirror_walk_dex3_actions(actions: torch.Tensor) -> torch.Tensor:
+    """Mirror walk-Dex3 actions (43-D joint targets).
+    Args: actions: (..., 43) tensor.
+    Returns: mirrored actions, same shape.
+    """
+    return _switch_g1_joints_left_right_dex3(actions)
+
+
+@torch.no_grad()
+def mirror_g1_walk_dex3(env=None, obs=None, actions=None):
+    """rsl_rl symmetry_cfg entrypoint for the Dex3 walk variant returning a doubled batch [original; mirrored].
+    Args: env: mjlab env (unused, kept for the rsl_rl API contract); obs: TensorDict with per-group keys, or plain tensor; actions: (N, 43) tensor, or None.
+    Returns: (obs_out, actions_out); each is None if the corresponding input is None, else doubled along the batch dim.
+    """
+    obs_out, actions_out = None, None
+    if obs is not None:
+        if hasattr(obs, "keys") and hasattr(obs, "batch_size"):
+            batch_size = obs.batch_size[0]
+            obs_out = obs.repeat(2)
+            for key in obs.keys():
+                obs_out[key][:batch_size] = obs[key]
+                obs_out[key][batch_size:] = mirror_walk_dex3_obs(obs[key])
+        else:
+            obs_mirror = mirror_walk_dex3_obs(obs)
+            obs_out = torch.cat([obs, obs_mirror], dim=0)
+    if actions is not None:
+        actions_mirror = mirror_walk_dex3_actions(actions)
+        actions_out = torch.cat([actions, actions_mirror], dim=0)
     return obs_out, actions_out
